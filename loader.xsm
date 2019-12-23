@@ -1,0 +1,120 @@
+		opt	h-f+
+; defs
+
+iccmd 		equ	$0342		; CIO command
+icbufa 		equ	$0344		; CIO buffer address
+icax1 		equ	$034a		; CIO aux1
+icax2 		equ	$034b		; CIO aux2
+cio		equ	$e456		; CIO OS-entry address
+
+cart_header	equ	$bffa		; cart header memory location
+
+phys_adr	equ	$bf00
+rela_adr	equ	$0700
+
+; DX-loader code
+
+		org	phys_adr	; set physical address
+
+car_ini		ldx	#$00		; move data from physicall location to relocation area
+c0		lda	phys_adr,x
+		sta	rela_adr,x
+		inx
+		bne	c0
+car_run		jmp	rel_run		; jump to relocated code
+
+		org	r:rela_adr	; set relocation address
+
+rel_run		lda	#$ff		; turn off BASIC! (if any)
+		sta	$d301		
+
+		sta	$d500		; turn off cartridge mapper at $a000-$bfff, and select next sector/bank
+
+		lda	#$a0		; set MEMTOP to $a000
+		sta	$6a
+
+		jsr	gr0		; re-init the screen
+
+i_loop		lda	<rts_vec	; set default INIT address to RTS instruction vector
+		sta	$2e2
+		lda	>rts_vec
+		sta	$2e3
+
+head_loop	jsr	get		; get load address
+		sta	load_adr+1
+		jsr	get
+		sta	load_adr+2
+		and	load_adr+1	; if $FF,$FF header skip!
+		cmp	#$ff
+		beq	head_loop
+	
+		jsr	get		; get lo-byte of block end address
+		sta	blk_end_lo+1
+		jsr	get		; get hi-byte of block end address
+		sta	blk_end_hi+1
+
+blk_loop	jsr	get		; get byte
+load_adr	sta	$0000		; put at actual block address
+
+		lda	load_adr+1	; check for end of block
+blk_end_lo	cmp	#$ff
+		lda	load_adr+2
+blk_end_hi	sbc	#$ff
+		bcs	bl_end
+		
+		inc	load_adr+1	; increment destination address
+		bne	*+5
+		inc	load_adr+2
+		
+		jmp	blk_loop
+
+bl_end		jsr	f_ini		; call the file INIT vector
+	
+		lda	f_len+0		; end of file?
+		ora	f_len+1
+		bne	i_loop		; no, load next block.
+
+f_run		jmp	($2e0)		; run loaded file!
+f_ini		jmp	($2e2)		; call init segment
+
+get		lda	$d500		; get byte
+		inc 	get+1		; inc lo-addr
+		bne	g_skp		; next sector?
+		sta	$d500		; next bank
+
+g_skp		dec	f_len		; decrement file length
+		bne	*+5
+		dec	f_len+1
+	
+rts_vec		rts
+	
+	
+gr0    		ldx	#$00	        ; select IOCB #0
+		lda	#$0c	        ; set "CLOSE" command
+		jsr	xcio
+
+		lda	#<ename		; set buffer address
+		sta	icbufa+0,x
+		lda	#>ename
+		sta	icbufa+1,x
+
+		lda	#$0c        	; set for READ/WRITE
+		sta	icax1,x
+		lda	#$00
+		sta	icax2,x
+		lda	#$03        	; set "OPEN" command
+xcio		sta	iccmd,x
+		jmp	cio
+	
+ename		dta	c'E:',$9b
+	
+		ert	*>$bff9
+
+		org	cart_header
+
+f_len		dta	a($ffff)
+		dta	$00
+		dta	$00
+		dta	a(car_ini)
+		
+		end
