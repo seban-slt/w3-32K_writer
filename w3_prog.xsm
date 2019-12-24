@@ -1,6 +1,13 @@
 		opt	h+
-		
-; OS defs
+
+; Atari OS defs
+
+ClrScr		equ	$7d
+EoF		equ	$88
+EoL		equ	$9b
+Bell		equ	$fd
+
+; OS CIO defs
 
 icchid		equ	$0340
 icdno		equ	$0341
@@ -27,11 +34,19 @@ CIO_PUT_RECORD	equ	$09
 CIO_CLOSE	equ	$0c
 CIO_STATUS	equ	$0d
 
-; zero page	
+; OS registers
 
 RT_CLOCK	equ	$14
+COLBACK		equ	$2c8
+
+; zero page	
 
 ptr		equ	$80
+
+; colours
+
+BLACK		equ	$00
+RED		equ	$20
 
 ; prog defs
 
@@ -52,25 +67,36 @@ data_buff_len	equ	$7f00
 	
 		org	$a000
 
-msg0		dta	125,29,c"*** Weekend 3+ cart. writer v0.1 ***",$9b
-msg1		dta	c" - done by Seban/Slight, (p) 2019 -",$9b
-msg_hlp		dta	c"Available commands are:",$9b
-msg_bad_cmd	dta	c"Unknown command, try HELP or ?",$9b
+msg0		dta	ClrScr,29,c"*** Weekend 3+ cart. writer v0.1 ***",EoL
+msg1		dta	c" - done by Seban/Slight, (p) 2019 -",EoL
+msg_hlp		dta	EoL,c"Available commands are:",EoL,0
+msg_bad_cmd	dta	c"Unknown command, try HELP or ?",Bell,EoL
 
 ; data structures for File/CIO commands:
 
-file_open	dta	1,CIO_OPEN,4,0,a(fname_ptr)			; open #1,4,0,"dev:filemane.ext"
+file_open	dta	1,CIO_OPEN,4,0,a(line_buff)			; open #1,4,0,"dev:filemane.ext"
 file_bget	dta	1,CIO_GET_BYTES,a(data_buff),a(data_buff_len)	; bget #1,data_buffer,data_buffer_len
 file_close	dta	1,CIO_CLOSE					; close #1
 
 ; data structures for Editor/CIO commands:
 
-e_devn		dta	c"E:",$9b					; editor device name
+e_devn		dta	c"E:",EoL					; editor device name
 editor_close	dta	0,CIO_CLOSE					; close #0
 editor_open	dta	0,CIO_OPEN,12,0,a(e_devn)			; open #0,12,0,"E:"
 editor_put	dta	0,CIO_PUT_RECORD,a(NULL),a(max_txt_len)		; print #0;"..."
 editor_input	dta	0,CIO_GET_RECORD,a(line_buff),a(line_buff_len)	; input #0,line$
 
+; set background colour
+
+set_colback	sta	$2c8
+;		jmp	vsync_wait		; jmp not needed when vsync_wait is next
+
+; wait for vertical blank
+
+vsync_wait	lda	RT_CLOCK
+		cmp	RT_CLOCK
+		beq	*-2
+		rts
 ; screen editor	INIT
 
 editor_init	ldx	<editor_close		; CLOSE #0 command struct
@@ -90,14 +116,31 @@ print		stx	editor_put+2		; store LO-byte of message address in data structure
 		ldy	>editor_put
 		jmp	cio_parse_cmd		; exec CIO command
 
+; print the null terminated string on console
+
+printz		stx	prz_msg+1	; store message address direct in code body below
+		sty	prz_msg+2
+		
+prz_msg		lda	$beee		; get msg char
+		bne	*+3		; end of string?
+		rts			; yes! back to caller
+		
+		jsr	put_c		; put char on console
+		
+		inc	prz_msg+1	; increment string address
+		bne	*+5
+		inc	prz_msg+2
+		
+		jmp	prz_msg
+
 ; put Bell procedure
 
-bell		lda	#$fd			; ATASCII "Bell" code
+os_bell		lda	#Bell			; ATASCII "Bell" code
 		bne	put_c			; go to put char
 
 ; put EoL procedure
 
-put_eol		lda	#$9b
+put_eol		lda	#EoL
 ;		jmp	put_c			; jmp don't needed if put-char proc is next after this proc.
 
 ; put char procedure
@@ -154,7 +197,6 @@ bd0		asl	product
 product		dta	$00
 digits		dta	$00,$00
 
-
 ; prints out the "welcome message on screen
 
 welcome_msg	ldx	<msg0			; print info line #0
@@ -168,20 +210,13 @@ welcome_msg	ldx	<msg0			; print info line #0
 
 ; show the command line prompt
 
-cmd_prompt	ldx	#0
-pr0		txa
-		pha
-		lda 	pr_line,x
-		beq	pr1
-		jsr	put_c
-		pla
-		tax
-		inx
-		bne	pr0
-pr1		pla
-		rts
+cmd_prompt	ldx	#<pr_line
+		ldy	#>pr_line
+		jmp	printz
 
 pr_line		dta	c"CMD>",0
+
+; procedure gets the user input from console
 
 get_cmd_line	ldx	<editor_input		; call INPUT command line
 		ldy	>editor_input
@@ -250,25 +285,37 @@ cio_skp1	lda	(ptr),y		; get LO byte of buffer address
 
 cio_skp0	jsr	cio		; call system CIO routine
 		bpl	cio_OK
+		php
+		cpy	#EoF
+		beq	cio_eof
 		
-cio_err		php
-		lda	#$30		; when CIO error then set border color to RED
-		sta	$2c8
-		jsr	vsync_wait
-		plp
-
+cio_err		lda	#RED		; when CIO error then set border color to RED
+		jsr	set_colback
+cio_eof		plp
 cio_OK		rts
 
-; wait for vertical blank
+; procedure prints I/O error message, with CIO error code converted to decimal
 
-vsync_wait	lda	RT_CLOCK
-		cmp	RT_CLOCK
-		beq	*-2
-		rts
+CIO_print_error	tya			; move	error code to A reg.
+		jsr	bin_dec8	; convert to decimal
+		
+		ldx	#<cio_msg_err	; set address of error message
+		ldy	#>cio_msg_err
+		jsr	printz		; print error message
+
+		lda	digits+1	; print out HI-byte of error code
+		jsr	put_hex
+		lda	digits+0	; print out LO-byte of error code
+		jsr	put_hex
+		jsr	put_eol		; add end of line marker
+		sec			; set CARRY (signals error condition for caller)
+		rts			; return
+
+cio_msg_err	dta	$9b,c"I/O error #",0
 
 ; command table
 
-cmds		dta	$9b,0,a(cmd_rts-1)
+cmds		dta	EoL,0,a(cmd_rts-1)
 		dta	c"?",0,a(cmd_help-1)
 		dta	c"HELP",0,a(cmd_help-1)
 		dta	c"DOS",0,a(cmd_dos-1)
@@ -279,31 +326,32 @@ cmds		dta	$9b,0,a(cmd_rts-1)
 		dta	c"PROG",0,a(cmd_prog-1)
 		dta	$ff				
 
+; -----------------------------------------------------------------------------
 ; "DOS" command
 
 cmd_dos		jmp	($0a)
 
+; -----------------------------------------------------------------------------
 ; "CLS" command, and "null entry" command
 
 cmd_cls		jsr	welcome_msg		; re-print the welcome-msg!
-cmd_rts		lda	#$00			; set border colour to black!
-		sta	$2c8
-		jsr	vsync_wait		; wait for V-Blank!
+cmd_rts		lda	#BLACK			; set border colour to black!
+		jsr	set_colback
 		clc				
 		rts
-		
+
+; -----------------------------------------------------------------------------
 ; "HELP" command
 
-cmd_help	jsr	put_eol			; put emty line on screen
-		ldx	<msg_hlp		; print-out help message
+cmd_help	ldx	<msg_hlp		; print-out help message
 		ldy	>msg_hlp
-		jsr	print
+		jsr	printz
 		
 		ldx	#$00			; clear X reg. (compare table index)
 
 cmhl_loop	lda	cmds,x			; get char from table
 		beq	cmhl_skp		; jump if end of string!
-		cmp	#$9b			; check for EoL
+		cmp	#EoL			; check for EoL
 		bne	cmhl_nxt		; proceed char
 
 		inx				; EoL/NULL "entry" detected, skip to next entry by advancing index
@@ -341,16 +389,20 @@ cmhl_done	jsr	put_eol
 		clc
 		rts
 
+; -----------------------------------------------------------------------------
 ; "DIR" command
 
 dir_open	dta	1,CIO_OPEN,6,0,a(line_buff)			; open #1,4,0,"dev:filemane.ext"
 dir_get_entry	dta	1,CIO_GET_RECORD,a(line_buff),a(line_buff_len)	; input #1,entry$
-dir_def_spec	dta	c"H:*.*",$9b
+dir_def_spec	dta	c"D:*.*",EoL
 
-cmd_dir		ldx	#>line_buff		; load HI-byte of line buffer to X reg.
+cmd_dir		txa				; save X reg.
+		pha				; ... on stack
+
+		ldx	#>line_buff		; load HI-byte of line buffer to X reg.
 
 		lda	line_buff,y		; check if the "DIR" command has additional input
-		cmp	#$9b			; ... EoL at entry pointer means no additional parameters!
+		cmp	#EoL			; ... EoL at entry pointer means no additional parameters!
 		bne	dir_not_eol		; not EoL so, there is user parmaters after the DIR command...
 
 		ldy	#<dir_def_spec		; ... EoL detected, so load the default DIR filespec.
@@ -359,71 +411,156 @@ cmd_dir		ldx	#>line_buff		; load HI-byte of line buffer to X reg.
 dir_not_eol	sty	dir_open+4		; update dir filespec pointer!
 		stx	dir_open+5		
 
-		ldx	<dir_open		; open I/O channel for directory
-		ldy	>dir_open
+		pla				; restore X reg.
+		tax
+		
+		lda	line_buff-2,x		; check buffer
+		cmp	#':'			; if ":" at end of buffer...
+		beq	dir_add			; add *.* to the dir filespec
+		cmp	#'>'			; or maybe ">" (subdir mark) at end of buffer?
+		bne	dir_dont_add		; no, so don't add *.* to the filespec
+
+dir_add		ldy	#0			; clear Y reg. (loop counter)
+dir_cpl		lda	dir_def_spec+2,y	; copy from default dir filespec "*.*"
+		sta	line_buff-1,x		; ...to user input buffer
+		inx				; advance X index
+		iny				; advance Y index
+		cpy	#$04			; all chars copied?
+		bcc	dir_cpl			; nope, do the loop!
+
+dir_dont_add	ldx	#<dir_open		; open I/O channel for directory
+		ldy	#>dir_open
 		jsr	cio_parse_cmd		; exec CIO command
 		bpl	dir_open_ok
 		
-		jsr	CIO_print_error
+dir_cio_err	jsr	CIO_print_error
 		jmp	dir_cmd_done
 
 dir_open_ok	
-
 dir_loop	ldx	#<dir_get_entry
 		ldy	#>dir_get_entry
 		jsr	cio_parse_cmd
-		bmi	dir_no_more
+		cpy	#EoF
+		beq	dir_no_more
+		bmi	dir_cio_err
 		
 		ldx	#<line_buff
 		ldy	#>line_buff
 		jsr	print
 		
 		jmp	dir_loop
-		
-		
+				
 dir_no_more	jsr	cmd_rts
 	
-
-dir_cmd_done	ldx	#<file_close
+dir_cmd_done	ldx	#<file_close		; close I/O channel
 		ldy	#>file_close
 		jsr	cio_parse_cmd
 		clc
 		rts
 
-CIO_print_error	tya
-		jsr	bin_dec8
+; -----------------------------------------------------------------------------
+; LOAD command
+
+cmd_load	sty	file_open+4		; update filespec pointer!
+
+		jsr	clear_file_len
+
+		ldx	#<file_open		; try to "open" selected file
+		ldy	#>file_open
+		jsr	cio_parse_cmd		; exec CIO command
+		bpl	load_open_ok		; opened succesfully?
+
+load_cio_err	jsr	CIO_print_error		; print error message
+		jmp	cmd_load_done		; finish processing
+
+load_open_ok	ldx	#<file_bget		; load selected file
+		ldy	#>file_bget
+		jsr	cio_parse_cmd		; exec CIO command
+		cpy	#EoF			; check for "end of file" status
+		beq	load_ok			; Yes! EoF detected, file loaded OK!
+		bmi	load_cio_err		; any other negative value? 
+
+		ldx	#<msg_to_long		; file to long message printout
+		ldy	#>msg_to_long
+		jsr	printz
+		jmp	cmd_load_done		; finish processing
+
+load_ok		lda	file_open		; file loaded OK, check the data size
+		asl	@
+		asl	@
+		asl	@
+		asl	@
+		tax
+		lda	icbufl+0,x		; get the LO-byte of loaded data size
+		sta	file_len+0		; store
+		lda	icbufl+1,x		; get the HI-byte of loaded data size
+		sta	file_len+1		; store
+	
+		ldx	#<msg_loaded		; printout the "file loaded" message
+		ldy	#>msg_loaded
+		jsr	printz
 		
-		jsr	put_eol
-		
-		ldx	#0
-cpr_loop	lda	cio_msg_err,x
-		beq	cpr_msg_end
-		stx	cpr_stx+1		; store X reg.
+		lda	#'$'			; print out the hex radix
 		jsr	put_c
-cpr_stx		ldx	#0
-		inx
-		bne	cpr_loop
-cpr_msg_end	lda	digits+1
+		
+		lda	file_len+1		; print out the length of loaded file
 		jsr	put_hex
-		lda	digits+0
+		lda	file_len+0
 		jsr	put_hex
-		jsr	put_eol
-		sec
+
+		ldx	#<msg_bytes_in		; print out the rest of message.
+		ldy	#>msg_bytes_in
+		jsr	printz
+
+		lda	data_buff+0
+		and	data_buff+1
+		cmp	#$ff
+		beq	load_chk_next
+		
+		ldx	#<msg_not_dos		; print out warning file
+		ldy	#>msg_not_dos
+		jsr	printz
+		
+		jsr	clear_file_len
+		jmp	cmd_load_done
+
+load_chk_next
+
+
+cmd_load_done	ldx	#<file_close		; close I/O channel
+		ldy	#>file_close
+		jsr	cio_parse_cmd		; parse CIO command
+
+		clc				; clear CARRY (no error flag)
+		rts				; return
+
+clear_file_len	lda	#$00
+		sta	file_len+0		; clear the "file length"
+		sta	file_len+1
+		sta	file_valid		; and the "file valid" flag
 		rts
 
-cio_msg_err	dta	c"I/O error #",0
+file_valid	dta	$00
+file_len	dta	a($0000)
 
+msg_to_long	dta	EoL,c"File to long!",Bell,EoL,0
+msg_loaded	dta	EoL,c"File loaded, ",0
+msg_bytes_in	dta	c" bytes in buffer.",EoL,0
+msg_not_dos	dta	c" Not a Atari-DOS file! "*,Bell,EoL,EoL,0
 
-cmd_load
+; -----------------------------------------------------------------------------
+
 cmd_verify
 cmd_prog
 		clc
 		rts
 
-; this procedure parsing the user command line buffer
+; -----------------------------------------------------------------------------
+; this procedure is used to parse the user command line buffer
 
 parse_input	sta	input_len_a+1		; store length of entered command line
 		sta	input_len_b+1
+		sta	input_len_c+1
 
 		ldx	#$00			; clear the X reg. (cmd-table index)
 pr_next		ldy	#$00			; clear the Y reg. (user input buffer index)
@@ -458,10 +595,15 @@ pr_skp_wspace	lda	line_buff,y		; get char from command line buffer
 input_len_b	cpy	#$ff			; end of chars in buffer?
 		bcc	pr_skp_wspace		; no, do the skip-loop!
 
-parse_done	lda	cmds+2,x		; put the HI-byte of command address on stack
+parse_done	lda	#$00			; set background colour to black
+		jsr	set_colback
+
+		lda	cmds+2,x		; put the HI-byte of command address on stack
 		pha
 		lda	cmds+1,x		; put the LO-byte of command address on stack
 		pha
+		
+input_len_c	ldx	#0			; return with command line length in X reg.
 		rts
 
 ; program starts here
@@ -478,7 +620,6 @@ main_loop	jsr	cmd_prompt		; print the prompt line
 		ldx	<msg_bad_cmd		; command not found? print message.
 		ldy	>msg_bad_cmd
 		jsr	print
-		jsr	bell			; call the bell!
 
 parse_ok	jmp	main_loop		; repeat till end of world! ;)
 		
