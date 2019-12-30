@@ -39,6 +39,8 @@ CIO_STATUS	equ	$0d
 RT_CLOCK	equ	$14
 COLBACK		equ	$2c8
 
+TRIG3		equ	$d013
+
 ; zero page	
 
 ptr		equ	$80
@@ -67,6 +69,8 @@ data_buff_len	equ	$7f00
 	
 		org	$a000
 
+fill		org	*+$100
+
 msg0		dta	ClrScr,29,c"*** Weekend 3+ cart. writer v0.1 ***",EoL
 msg1		dta	c" - done by Seban/Slight, (p) 2019 -",EoL
 msg_hlp		dta	EoL,c"Available commands are:",EoL,0
@@ -82,7 +86,7 @@ file_close	dta	1,CIO_CLOSE					; close #1
 
 e_devn		dta	c"E:",EoL					; editor device name
 editor_close	dta	0,CIO_CLOSE					; close #0
-editor_open	dta	0,CIO_OPEN,12,0,a(e_devn)			; open #0,12,0,"E:"
+editor_open	dta	0,CIO_OPEN,12,0,a(e_devn)			; open  #0,12,0,"E:"
 editor_put	dta	0,CIO_PUT_RECORD,a(NULL),a(max_txt_len)		; print #0;"..."
 editor_input	dta	0,CIO_GET_RECORD,a(line_buff),a(line_buff_len)	; input #0,line$
 
@@ -517,16 +521,14 @@ load_ok		lda	file_open		; file loaded OK, check the data size
 		cmp	#$ff
 		beq	load_chk_next
 		
-		ldx	#<msg_not_dos		; print out warning file
+		ldx	#<msg_not_dos		; print out warning message
 		ldy	#>msg_not_dos
 		jsr	printz
-		
-		jsr	clear_file_len
+	
+		jsr	clear_file_len		; clear the file length and file_valid flags!
 		jmp	cmd_load_done
 
 load_chk_next
-
-
 cmd_load_done	ldx	#<file_close		; close I/O channel
 		ldy	#>file_close
 		jsr	cio_parse_cmd		; parse CIO command
@@ -550,8 +552,204 @@ msg_not_dos	dta	c" Not a Atari-DOS file! "*,Bell,EoL,EoL,0
 
 ; -----------------------------------------------------------------------------
 
+cmd_prog	sei				; disable IRQ's
+		inc	$d40e			; disable NMI
+		lda	$d40b			; wait for scan-line #0
+		bne	*-3
+		sta	$d400			; disable ANTIC's DISPLAY-DMA
+		dec	$d301
+		
+only_once	ldy	#0
+		bne	cmd_no_copy
+		inc	only_once+1
+		
+; copy OS-ROM font under RAM
+		
+		sty	ptr+0			; set pointer to OS-ROM character set address ($e000)
+		lda	#$e0
+		sta	ptr+1
+
+		ldx	#$03			; OS-ROM font size if 1024 bytes (4 pages)
+cmd_rcp		inc	$d301			; enable OS-ROM
+		lda	(ptr),y			; get source byte
+		dec	$d301			; disable OS-ROM
+		sta	(ptr),y			; put at the same address but "under" OS-ROM
+		iny				; inc. Y reg. (page loop counter)
+		bne	cmd_rcp			; loop until done the page!
+		inc	ptr+1			; next page
+		dex				; decrement page counter
+		bpl	cmd_rcp			; <0? no, then loop.
+
+		ldx	#>[rel_loc_end-rel_loc]	; calculate how many pages copy from here to RAM under OS-ROM
+cmd_cpl0	lda	org_loc,y		; get byte from source address
+cmd_cpl1	sta	rel_loc,y		; move to reloc address
+		iny				; next byte on page
+		bne	cmd_cpl0		; page-copy loop
+		inc	cmd_cpl0+2		; increment HI-byte of src address
+		inc	cmd_cpl1+2		; increment HI-byte of dst address
+		dex				; decr. X reg (page counter)
+		bpl	cmd_cpl0		; <0? no, so do the copy-loop!
+
+cmd_no_copy	jsr	cmd_prog_entry		; jump into relocated code
+
+		inc	$d301			; enable OS-ROM
+		lsr	$d40e			; restore NMI's (only VBL)
+		cli				; restore IRQ's
+		clc				; all OK!
+		rts				; ... and return!
+		
+org_loc		equ	*
+
+		org	r:$c000
+
+rel_loc		equ	*
+
+dlp		dta	$70,$70,$70,$42,a(scr0),$70
+		dta	$42
+info_line_a	dta	a(scr1),$00,$02,$70
+		dta	$42
+info_line_b	dta	a(scr_a0)
+
+		dta	$70,$46,a(scrd),$70,$70,$70
+
+		dta	$70,$46,a(scrb),$10
+		dta	$4b,a($a000),$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b
+		dta	$70,$46,a(scrc),$10
+		dta	$4b,a($d500),$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b
+		dta	$41,a(dlp)
+
+;			  0123456789abcdef0123456789abcdef
+scr0		dta	d' Weekend 3+ prog/verify module! '*
+scr1		dta	d'Now set switch to write position'
+		dta	d'then press RESET button on cart!'
+scr2		dta	d' Cartridge presence dectected ! '
+		dta	d'Press',2+64,d'SHIFT'*,22+64,d'key to program cart.'
+scr3		dta	d' - TRIG3 state error detected - '*
+		dta	d'cartridge suddenly disconnected!'
+
+
+scr_a0		dta	d'    waiting for user action!    '*
+scr_a1		dta	d' Press ESC key for command line '
+
+;			  0123456789abcdef
+scrb		dta	d'$A000-$A0FF AREA'*
+scrc		dta	d'$D500-$D5FF AREA'*
+scrd		dta	d'TRIG3 VALUE: $__'*
+
+hex_trig3	pha
+		lsr	@
+		lsr	@
+		lsr	@
+		lsr	@
+		jsr	to_hex_t3
+		pla
+		and	#$0f
+to_hex_t3	cmp 	#$0a
+		sed
+		adc 	#'0'-32+128
+		cld
+		sta	scrd,y
+		iny
+		rts
+
+cmd_prog_entry	sei
+		inc	$d40e
+		lda	$d40b
+		bne	*-3
+		
+		lda	$2c5
+		sta	$d016
+		and	#$f0
+		ora	#$04
+		sta	$d018
+		
+		ldx	<dlp
+		ldy	>dlp
+		stx	$d402
+		sty	$d403
+		
+		lda	#$21
+		sta	$d400
+		
+		ldx	<scr1
+		ldy	>scr1
+		stx	info_line_a+0
+		sty	info_line_a+1
+
+trig3_wait_loop	jsr	show_trig3
+		beq	trig3_det_ok
+
+		jsr	is_ESC_pressed		; is ESC key pressed?
+		bne	trig3_wait_loop		; no!
+		rts				; return
+
+trig3_det_ok	ldx	#<scr2			
+		ldy	#>scr2
+		stx	info_line_a+0
+		sty	info_line_a+1
+
+trig3_loop	lda	TRIG3
+		beq	trig3_error
+
+		lda	$d20f
+		and	#$08
+		bne	trig3_loop
+		
+		rts
+
+
+; Trig3 error sub-routine
+
+trig3_error	lda	#RED+$0a
+		sta	$d016
+		sta	$d017
+		lda	#RED+$04
+		sta	$d018
+
+		ldx	#<scr3			
+		ldy	#>scr3
+		stx	info_line_a+0
+		sty	info_line_a+1
+
+		ldx	#<scr_a1	
+		ldy	#>scr_a1
+		stx	info_line_b+0
+		sty	info_line_b+1
+
+err_loop	jsr	show_trig3
+
+		lda	$d40b			; make some noise
+		asl	@
+		sta	$d01f
+		
+		jsr	is_ESC_pressed		; check for ESC key!
+		bne	err_loop		; no, do the loop!
+		rts				; return
+
+; this proc check for ESC key pressed without OS-ROM intercation!
+
+is_ESC_pressed	lda	$d20f			; get POKEY keyboard status reg.
+		and	#$04			; any key pressed?
+		bne 	is_no_key		; no! jump!
+		lda	$d209			; get POKEY scan code
+		cmp	#$1c			; is that 'ESC' code?
+is_no_key	rts
+
+; shows TRIG3 state at info line
+
+show_trig3	lda	TRIG3
+		pha
+		ldy	#$0e
+		jsr	hex_trig3
+		pla
+		cmp	#$01
+		rts
+
+rel_loc_end	equ *
+		
+		org	r:[rel_loc_end-rel_loc+org_loc]
+
 cmd_verify
-cmd_prog
 		clc
 		rts
 
@@ -606,9 +804,35 @@ parse_done	lda	#$00			; set background colour to black
 input_len_c	ldx	#0			; return with command line length in X reg.
 		rts
 
+; filler
+
+fill_area_init	ldx	#$0f
+fl0		lda	#$55
+		sta	fill+$00,x
+		sta	fill+$20,x
+		sta	fill+$40,x
+		sta	fill+$60,x
+		sta	fill+$80,x
+		sta	fill+$a0,x
+		sta	fill+$c0,x
+		sta	fill+$e0,x
+		lda	#$aa
+		sta	fill+$10,x
+		sta	fill+$30,x
+		sta	fill+$50,x
+		sta	fill+$70,x
+		sta	fill+$90,x
+		sta	fill+$b0,x
+		sta	fill+$d0,x
+		sta	fill+$f0,x
+		dex
+		bpl	fl0
+		rts
+
 ; program starts here
 
-st		jsr	editor_init		; init the screen editor
+st		jsr	fill_area_init
+		jsr	editor_init		; init the screen editor
 		jsr	welcome_msg		; print out welcome message
 	
 main_loop	jsr	cmd_prompt		; print the prompt line
