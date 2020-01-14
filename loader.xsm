@@ -28,9 +28,10 @@ car_run		jmp	rel_run		; jump to relocated code
 rel_run		lda	#$ff		; turn off BASIC! (if any)
 		sta	$d301		
 
+		lda	$d500
 		sta	$d500		; turn off cartridge mapper at $a000-$bfff, and select next sector/bank
 
-		lda	#$a0		; set MEMTOP to $a000
+		lda	#$c0		; set MEMTOP to $c000
 		sta	$6a
 
 		jsr	gr0		; re-init the screen
@@ -79,8 +80,9 @@ f_ini		jmp	($2e2)		; call init segment
 
 get		lda	$d500		; get byte
 		inc 	get+1		; inc lo-addr
+		inc	get_bnk+1	; inc lo-addr in "bank change" section
 		bne	g_skp		; next sector?
-		sta	$d500		; next bank
+get_bnk		sta	$d500		; next bank
 
 g_skp		dec	f_len		; decrement file length
 		bne	*+5

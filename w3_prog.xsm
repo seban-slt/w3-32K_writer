@@ -59,7 +59,7 @@ line_buff	equ	$500
 line_buff_len	equ	$80
 
 fname_ptr	equ	$500
-data_buff	equ	$2000
+data_buff	equ	$2100
 data_buff_len	equ	$7f00
 
 ; file structure starts here
@@ -67,14 +67,22 @@ data_buff_len	equ	$7f00
 		org	$d301
 		dta	$ff
 	
+		org	$2000
+
+boot_loader	ins	'loader.xex'
+		ert	[*!=$2100]
+
 		org	$a000
 
 fill		org	*+$100
 
-msg0		dta	ClrScr,29,c"*** Weekend 3+ cart. writer v0.1 ***",EoL
-msg1		dta	c" - done by Seban/Slight, (p) 2019 -",EoL
+msg_welcome	dta	ClrScr,29,c"*** Weekend 3+ cart. writer v0.1 ***",EoL
+		dta	c" - done by Seban/Slight, (p) 2019 -",EoL,EoL
+		dta	c" alpha version! don't redistribute! "*,EoL,EoL,0
+		
 msg_hlp		dta	EoL,c"Available commands are:",EoL,0
 msg_bad_cmd	dta	c"Unknown command, try HELP or ?",Bell,EoL
+msg_cmd_notim	dta	c"Command not implemented yet ;/",Bell,EoL
 
 ; data structures for File/CIO commands:
 
@@ -203,14 +211,9 @@ digits		dta	$00,$00
 
 ; prints out the "welcome message on screen
 
-welcome_msg	ldx	<msg0			; print info line #0
-		ldy	>msg0
-		jsr	print
-		
-		ldx	<msg1			; print info line #1
-		ldy	>msg1
-		jsr	print
-		jmp	put_eol
+welcome_msg	ldx	<msg_welcome		; print welcome message
+		ldy	>msg_welcome
+		jmp	printz
 
 ; show the command line prompt
 
@@ -467,7 +470,8 @@ dir_cmd_done	ldx	#<file_close		; close I/O channel
 
 cmd_load	sty	file_open+4		; update filespec pointer!
 
-		jsr	clear_file_len
+		jsr	clear_file_len		; clear file len, and "valid file" flag
+		jsr	clear_file_area		; clear the data buffer
 
 		ldx	#<file_open		; try to "open" selected file
 		ldy	#>file_open
@@ -528,7 +532,7 @@ load_ok		lda	file_open		; file loaded OK, check the data size
 		jsr	clear_file_len		; clear the file length and file_valid flags!
 		jmp	cmd_load_done
 
-load_chk_next
+load_chk_next	inc 	file_valid
 cmd_load_done	ldx	#<file_close		; close I/O channel
 		ldy	#>file_close
 		jsr	cio_parse_cmd		; parse CIO command
@@ -542,6 +546,24 @@ clear_file_len	lda	#$00
 		sta	file_valid		; and the "file valid" flag
 		rts
 
+clear_file_area	ldx	#>data_buff_len		; load HI-byte of data buffer len
+
+		lda	#<data_buff		; load LO-byte of data buffer address
+		sta	ptr+0
+		lda	#>data_buff		; load HI-byte of data buffer address
+		sta	ptr+1
+
+		lda	#$00			; zero to A reg. (fill byte)
+		tay				; zero to Y reg. (page-byte counter)
+		
+clr_b0		sta	(ptr),y			; clear mam @ptr
+		iny				; next byte
+		bne	clr_b0			; loop till end of page
+		dex				; decrement page counter
+		bne	clr_b0			; loop until done
+		rts
+
+
 file_valid	dta	$00
 file_len	dta	a($0000)
 
@@ -552,7 +574,17 @@ msg_not_dos	dta	c" Not a Atari-DOS file! "*,Bell,EoL,EoL,0
 
 ; -----------------------------------------------------------------------------
 
-cmd_prog	sei				; disable IRQ's
+cmd_prog	lda	file_valid
+		bne	cmd_prog_OK
+		ldx	<msg_no_file
+		ldy	>msg_no_file
+		jsr	print
+		clc
+		rts
+
+msg_no_file	dta	c" No vaild file in buffer! "*,Bell,EoL
+
+cmd_prog_OK	sei				; disable IRQ's
 		inc	$d40e			; disable NMI
 		lda	$d40b			; wait for scan-line #0
 		bne	*-3
@@ -626,15 +658,25 @@ scr2		dta	d' Cartridge presence dectected ! '
 		dta	d'Press',2+64,d'SHIFT'*,22+64,d'key to program cart.'
 scr3		dta	d' - TRIG3 state error detected - '*
 		dta	d'cartridge suddenly disconnected!'
+scr4		dta	d'Writting cartridge, please wait!'
+prog_bar	dta	d'                                '
+
+scr5		dta	d' Change switch to READ position '*
+		dta	d' Waiting for proper Trig3 state '
 
 
 scr_a0		dta	d'    waiting for user action!    '*
 scr_a1		dta	d' Press ESC key for command line '
+scr_a2		dta	d'           working...           '*
+scr_a3		dta	d' Writing done, waiting for user '*
 
 ;			  0123456789abcdef
 scrb		dta	d'$A000-$A0FF AREA'*
 scrc		dta	d'$D500-$D5FF AREA'*
 scrd		dta	d'TRIG3 VALUE: $__'*
+
+; char table for progrss bar (ANTIC codes)
+bar_char_tab	dta	$56,$59,$c2,$80		
 
 hex_trig3	pha
 		lsr	@
@@ -658,10 +700,7 @@ cmd_prog_entry	sei
 		bne	*-3
 		
 		lda	$2c5
-		sta	$d016
-		and	#$f0
-		ora	#$04
-		sta	$d018
+		jsr	set_color
 		
 		ldx	<dlp
 		ldy	>dlp
@@ -688,24 +727,97 @@ trig3_det_ok	ldx	#<scr2
 		stx	info_line_a+0
 		sty	info_line_a+1
 
+		lda	#$8a
+		jsr	set_color
+
 trig3_loop	lda	TRIG3
-		beq	trig3_error
+		bne	*+5
+		jmp	trig3_error
 
 		lda	$d20f
 		and	#$08
 		bne	trig3_loop
 		
-		rts
+		lda	#$4a
+		jsr	set_color
+		
+		ldx	#31
+		lda	#0
+prb_cl0		sta	prog_bar,x
+		dex
+		bpl	prb_cl0
+	
+		ldx	#<scr4			
+		ldy	#>scr4
+		stx	info_line_a+0
+		sty	info_line_a+1
 
+		ldx	#<scr_a2	
+		ldy	#>scr_a2
+		stx	info_line_b+0
+		sty	info_line_b+1
+
+		lda	#<data_buff		; set LO-byte of data buffer
+		sta	ptr+0
+			
+		ldy	#0
+
+prg_l0		ldx	#0
+		lda	#>data_buff
+		sta	ptr+1
+
+prg_l1		lda	(ptr),y
+		sta	$d500,y
+		inc	ptr+1
+		inx	
+		bpl	prg_l1
+		
+		tya
+		pha
+		lsr	@
+		lsr	@
+		lsr	@
+		tax
+		tya
+		lsr	@
+		and	#$03
+		tay
+		lda	bar_char_tab,y
+		sta	prog_bar,x
+		
+		pla
+		tay
+		iny
+		bne	prg_l0
+
+		ldx	#<scr5			
+		ldy	#>scr5
+		stx	info_line_a+0
+		sty	info_line_a+1
+
+		ldx	#<scr_a3	
+		ldy	#>scr_a3
+		stx	info_line_b+0
+		sty	info_line_b+1
+
+		lda	#$0a
+		jsr	set_color
+		
+prg_wait_t3	jsr	show_trig3
+		bne	prg_trig3_done
+	
+		lda	$d500
+		sta	$d500
+		sta	$d40a
+		jmp	prg_wait_t3
+
+prg_trig3_done	rts
 
 ; Trig3 error sub-routine
 
 trig3_error	lda	#RED+$0a
-		sta	$d016
-		sta	$d017
-		lda	#RED+$04
-		sta	$d018
-
+		jsr	set_color
+		
 		ldx	#<scr3			
 		ldy	#>scr3
 		stx	info_line_a+0
@@ -745,11 +857,26 @@ show_trig3	lda	TRIG3
 		cmp	#$01
 		rts
 
+; sets the screen colours
+
+set_color	pha
+		lda	$d40b
+		bne	*-3
+		pla
+		sta	$d016
+		sta	$d017
+		and	#$f0
+		ora	#$04
+		sta	$d018
+		rts
+
 rel_loc_end	equ *
 		
 		org	r:[rel_loc_end-rel_loc+org_loc]
 
-cmd_verify
+cmd_verify	ldx	<msg_cmd_notim
+		ldy	>msg_cmd_notim
+		jsr	print
 		clc
 		rts
 
