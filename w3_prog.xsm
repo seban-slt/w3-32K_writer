@@ -37,9 +37,13 @@ CIO_STATUS	equ	$0d
 ; OS registers
 
 RT_CLOCK	equ	$14
+RAMTOP		equ	$6a
 COLBACK		equ	$2c8
+RAMSIZ		equ	$2e4
+BASICF		equ	$3f8
 
 TRIG3		equ	$d013
+PORTB		equ	$d301
 
 ; zero page	
 
@@ -59,24 +63,65 @@ line_buff	equ	$500
 line_buff_len	equ	$80
 
 fname_ptr	equ	$500
-data_buff	equ	$2100
+data_buff	equ	$3d00
 data_buff_len	equ	$7f00
 
 ; file structure starts here
 
-		org	$d301
-		dta	$ff
-	
 		org	$2000
 
-boot_loader	ins	'loader.xex'
-		ert	[*!=$2100]
+prg_ini		lda	$d500		; disable W3+ cart (maybe enabled?)
+		sta	$d500
 
-		org	$a000
+		lda	#$c0		; check RAMTOP
+		cmp	RAMTOP
+		beq	ini_end
+		sta	RAMTOP		; set RAMTOP
+		sta	RAMSIZ		; and update RAM size
 
-fill		org	*+$100
+		lda	PORTB		; disabple OS-BASIC
+		ora	#$02
+		sta	PORTB
 
-msg_welcome	dta	ClrScr,29,c"*** Weekend 3+ cart. writer v0.1 ***",EoL
+		lda	$a000		; chceck if RAM preset at OS-BASIC area
+		inc	$a000
+		cmp	$a000
+		beq	ram_err
+
+		lda	#$01		; disable BASIC for OS
+		sta	BASICF
+
+		ldx	#2		; close "E:"
+		jsr	editor
+		ldx	#0		; open "E:"
+
+editor		lda	$e401,x		; screen editor direct call
+		pha
+		lda	$e400,x
+		pha
+ini_end		rts
+
+ram_err		ldy	#39
+
+r0		lda	msg_ram_err,y
+		sta	($58),y
+		dey
+		bpl	r0
+
+r1		lda	$d40b
+		sta	$d40a
+		asl	@
+		sta	$d01f
+		jmp	r1
+
+;			  0123456789012345678901234567890123456789
+msg_ram_err	dta	d"Can't disable ROM at $A000-$BFFF area..."*
+
+		ini	prg_ini
+
+		org	$2000
+
+msg_welcome	dta	ClrScr,29,c"*** Weekend 3+ cart. writer v0.5 ***",EoL
 		dta	c" - done by Seban/Slight, (p) 2019 -",EoL,EoL
 		dta	c" alpha version! don't redistribute! "*,EoL,EoL,0
 		
@@ -589,52 +634,16 @@ cmd_prog_OK	sei				; disable IRQ's
 		lda	$d40b			; wait for scan-line #0
 		bne	*-3
 		sta	$d400			; disable ANTIC's DISPLAY-DMA
-		dec	$d301
-		
-only_once	ldy	#0
-		bne	cmd_no_copy
-		inc	only_once+1
-		
-; copy OS-ROM font under RAM
-		
-		sty	ptr+0			; set pointer to OS-ROM character set address ($e000)
-		lda	#$e0
-		sta	ptr+1
 
-		ldx	#$03			; OS-ROM font size if 1024 bytes (4 pages)
-cmd_rcp		inc	$d301			; enable OS-ROM
-		lda	(ptr),y			; get source byte
-		dec	$d301			; disable OS-ROM
-		sta	(ptr),y			; put at the same address but "under" OS-ROM
-		iny				; inc. Y reg. (page loop counter)
-		bne	cmd_rcp			; loop until done the page!
-		inc	ptr+1			; next page
-		dex				; decrement page counter
-		bpl	cmd_rcp			; <0? no, then loop.
+		jsr	cmd_prog_entry		; jump into relocated code
 
-		ldx	#>[rel_loc_end-rel_loc]	; calculate how many pages copy from here to RAM under OS-ROM
-cmd_cpl0	lda	org_loc,y		; get byte from source address
-cmd_cpl1	sta	rel_loc,y		; move to reloc address
-		iny				; next byte on page
-		bne	cmd_cpl0		; page-copy loop
-		inc	cmd_cpl0+2		; increment HI-byte of src address
-		inc	cmd_cpl1+2		; increment HI-byte of dst address
-		dex				; decr. X reg (page counter)
-		bpl	cmd_cpl0		; <0? no, so do the copy-loop!
-
-cmd_no_copy	jsr	cmd_prog_entry		; jump into relocated code
-
-		inc	$d301			; enable OS-ROM
 		lsr	$d40e			; restore NMI's (only VBL)
 		cli				; restore IRQ's
 		clc				; all OK!
 		rts				; ... and return!
-		
-org_loc		equ	*
 
-		org	r:$c000
-
-rel_loc		equ	*
+align_mem0	equ	[[*/$100]+1]*$100	; calculate the aligment to the nearest page (needed correct DL location)
+		org	align_mem0
 
 dlp		dta	$70,$70,$70,$42,a(scr0),$70
 		dta	$42
@@ -644,8 +653,6 @@ info_line_b	dta	a(scr_a0)
 
 		dta	$70,$46,a(scrd),$70,$70,$70
 
-		dta	$70,$46,a(scrb),$10
-		dta	$4b,a($a000),$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b
 		dta	$70,$46,a(scrc),$10
 		dta	$4b,a($d500),$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b
 		dta	$41,a(dlp)
@@ -654,119 +661,119 @@ info_line_b	dta	a(scr_a0)
 scr0		dta	d' Weekend 3+ prog/verify module! '*
 scr1		dta	d'Now set switch to write position'
 		dta	d'then press RESET button on cart!'
-scr2		dta	d' Cartridge presence dectected ! '
-		dta	d'Press',2+64,d'SHIFT'*,22+64,d'key to program cart.'
 scr3		dta	d' - TRIG3 state error detected - '*
-		dta	d'cartridge suddenly disconnected!'
+		dta	d' > cartridge suddenly enabled < '
 scr4		dta	d'Writting cartridge, please wait!'
 prog_bar	dta	d'                                '
 
-scr5		dta	d' Change switch to READ position '*
-		dta	d' Waiting for proper Trig3 state '
+scr5		dta	d'Done! SHIFT for command line or,'
+		dta	d'enable CART and hit RESET to run'
 
-
-scr_a0		dta	d'    waiting for user action!    '*
-scr_a1		dta	d' Press ESC key for command line '
+scr_a0		dta	d'  When ready press SHIFT key!   '*
+scr_a1		dta	d' Press ESC key to abort/restart '
 scr_a2		dta	d'           working...           '*
 scr_a3		dta	d' Writing done, waiting for user '*
 
 ;			  0123456789abcdef
-scrb		dta	d'$A000-$A0FF AREA'*
 scrc		dta	d'$D500-$D5FF AREA'*
 scrd		dta	d'TRIG3 VALUE: $__'*
 
-; char table for progrss bar (ANTIC codes)
+; char table for progrss bar (ANTIC screen-codes)
 bar_char_tab	dta	$56,$59,$c2,$80		
 
-hex_trig3	pha
+; procedure displays the value od TRIG3 register in appropriate screen line
+
+hex_trig3	pha				; store A reg. (value to display)
+		lsr	@			; high nibble processing
 		lsr	@
 		lsr	@
 		lsr	@
-		lsr	@
-		jsr	to_hex_t3
-		pla
-		and	#$0f
-to_hex_t3	cmp 	#$0a
+		jsr	to_hex_t3		; display it!
+		pla				; restore value to display i A reg.
+		and	#$0f			; low nibble processing
+to_hex_t3	cmp 	#$0a			; ... do the bin to hex conversion of a nibble
 		sed
 		adc 	#'0'-32+128
 		cld
-		sta	scrd,y
-		iny
-		rts
+		sta	scrd,y			; store in screen
+		iny				; move to next screen location
+		rts				; return
 
-cmd_prog_entry	sei
-		inc	$d40e
-		lda	$d40b
-		bne	*-3
+cmd_prog_entry	sei				; disable IRQ
+		inc	$d40e			; disable NMI
+		lda	$d40b			; load actual rendered screen line into A reg.
+		bne	*-3			; wait for screen-line #0
 		
-		lda	$2c5
+		lda	$2c5			; set the colours
 		jsr	set_color
 		
-		ldx	<dlp
+		ldx	<dlp			; setup new "Display List"
 		ldy	>dlp
 		stx	$d402
 		sty	$d403
 		
-		lda	#$21
+		lda	#$21			; set screen size to "narrow"
 		sta	$d400
 		
-		ldx	<scr1
+		ldx	<scr1			; re-init info-line A pointer
 		ldy	>scr1
 		stx	info_line_a+0
 		sty	info_line_a+1
 
-trig3_wait_loop	jsr	show_trig3
-		beq	trig3_det_ok
+		ldx	#<scr_a0		; re-init info-line B pointer
+		ldy	#>scr_a0
+		stx	info_line_b+0
+		sty	info_line_b+1
+
+
+trig3_wait_loop	jsr	show_trig3		; check the TRIG3 state
+		beq	*+5			; if not active, then skip next instruction (2 bytes BEQ and 3 bytes JMP)
+		jmp	trig3_error		; ...or jump to Trig3 state error
+
+		lda	$d20f			; load keyboard status
+		and	#$08			; check for SHIFT key
+		beq	prog_begin		; when pressed branch to programming sequence
 
 		jsr	is_ESC_pressed		; is ESC key pressed?
 		bne	trig3_wait_loop		; no!
 		rts				; return
 
-trig3_det_ok	ldx	#<scr2			
-		ldy	#>scr2
-		stx	info_line_a+0
-		sty	info_line_a+1
-
-		lda	#$8a
+prog_begin	lda	#$4a			; set the screen colors (to distinguish programming mode)
 		jsr	set_color
 
-trig3_loop	lda	TRIG3
-		bne	*+5
-		jmp	trig3_error
+		lda	file_len+0		; store loaded file length directly into bootloader
+		sta	boot_loader+$fa
+		lda	file_len+1
+		sta	boot_loader+$fb
 
-		lda	$d20f
-		and	#$08
-		bne	trig3_loop
-		
-		lda	#$4a
-		jsr	set_color
-		
-		ldx	#31
-		lda	#0
-prb_cl0		sta	prog_bar,x
-		dex
-		bpl	prb_cl0
+		ldx	#31			; progress-bar size
+		lda	#0			; space in ANTIC screen code
+prb_cl0		sta	prog_bar,x		; clear prog-bar area
+		dex				; decr. loop-counter (X reg.)
+		bpl	prb_cl0			; all done? no.. then branch, and do the loop again!
 	
-		ldx	#<scr4			
+		ldx	#<scr4			; update message into info-line A
 		ldy	#>scr4
 		stx	info_line_a+0
 		sty	info_line_a+1
 
-		ldx	#<scr_a2	
+		ldx	#<scr_a2		; update message into info-line B
 		ldy	#>scr_a2
 		stx	info_line_b+0
 		sty	info_line_b+1
 
-		lda	#<data_buff		; set LO-byte of data buffer
+		lda	#<[data_buff-$100]	; set LO-byte of data buffer
 		sta	ptr+0
 			
-		ldy	#0
+		ldy	#0			; clear Y reg. (page byte pointer/counter)
 
-prg_l0		ldx	#0
-		lda	#>data_buff
+; programming loop begins below
+
+prg_l0		ldx	#0			; setup the hi-byte of data buffer (-$100 offset for to include dx-loader!)
+		lda	#>[data_buff-$100]
 		sta	ptr+1
 
-prg_l1		lda	(ptr),y
+prg_l1		lda	(ptr),y			
 		sta	$d500,y
 		inc	ptr+1
 		inx	
@@ -800,16 +807,15 @@ prg_l1		lda	(ptr),y
 		stx	info_line_b+0
 		sty	info_line_b+1
 
-		lda	#$0a
+		lda	#$8a
 		jsr	set_color
 		
 prg_wait_t3	jsr	show_trig3
-		bne	prg_trig3_done
-	
-		lda	$d500
-		sta	$d500
-		sta	$d40a
-		jmp	prg_wait_t3
+		bne	ret_or_run
+
+		lda	$d20f
+		and	#$08
+		bne	prg_wait_t3
 
 prg_trig3_done	rts
 
@@ -833,9 +839,13 @@ err_loop	jsr	show_trig3
 		lda	$d40b			; make some noise
 		asl	@
 		sta	$d01f
-		
+
 		jsr	is_ESC_pressed		; check for ESC key!
 		bne	err_loop		; no, do the loop!
+
+ret_or_run	lda	TRIG3			; cart already enabled?
+		beq	*+5			; no!
+		jmp	$e474			; yes! then warm-reset!
 		rts				; return
 
 ; this proc check for ESC key pressed without OS-ROM intercation!
@@ -854,7 +864,6 @@ show_trig3	lda	TRIG3
 		ldy	#$0e
 		jsr	hex_trig3
 		pla
-		cmp	#$01
 		rts
 
 ; sets the screen colours
@@ -869,10 +878,6 @@ set_color	pha
 		ora	#$04
 		sta	$d018
 		rts
-
-rel_loc_end	equ *
-		
-		org	r:[rel_loc_end-rel_loc+org_loc]
 
 cmd_verify	ldx	<msg_cmd_notim
 		ldy	>msg_cmd_notim
@@ -931,35 +936,9 @@ parse_done	lda	#$00			; set background colour to black
 input_len_c	ldx	#0			; return with command line length in X reg.
 		rts
 
-; filler
-
-fill_area_init	ldx	#$0f
-fl0		lda	#$55
-		sta	fill+$00,x
-		sta	fill+$20,x
-		sta	fill+$40,x
-		sta	fill+$60,x
-		sta	fill+$80,x
-		sta	fill+$a0,x
-		sta	fill+$c0,x
-		sta	fill+$e0,x
-		lda	#$aa
-		sta	fill+$10,x
-		sta	fill+$30,x
-		sta	fill+$50,x
-		sta	fill+$70,x
-		sta	fill+$90,x
-		sta	fill+$b0,x
-		sta	fill+$d0,x
-		sta	fill+$f0,x
-		dex
-		bpl	fl0
-		rts
-
 ; program starts here
 
-st		jsr	fill_area_init
-		jsr	editor_init		; init the screen editor
+st		jsr	editor_init		; init the screen editor
 		jsr	welcome_msg		; print out welcome message
 	
 main_loop	jsr	cmd_prompt		; print the prompt line
@@ -974,4 +953,11 @@ main_loop	jsr	cmd_prompt		; print the prompt line
 
 parse_ok	jmp	main_loop		; repeat till end of world! ;)
 		
+		ert	[*>[data_buff-$100]]
+
+		org	[data_buff-$100]
+
+boot_loader	ins	'loader.xex'
+		ert	[*!=data_buff]
+
 		run	st

@@ -1,20 +1,16 @@
 		opt	h-f+
 ; defs
 
-iccmd 		equ	$0342		; CIO command
-icbufa 		equ	$0344		; CIO buffer address
-icax1 		equ	$034a		; CIO aux1
-icax2 		equ	$034b		; CIO aux2
-cio		equ	$e456		; CIO OS-entry address
-
 cart_header	equ	$bffa		; cart header memory location
 
-phys_adr	equ	$bf00
+boot_adr	equ	$bf00
 rela_adr	equ	$0700
+
+f_len		equ	[crt_flen-phys_adr+rela_adr]
 
 ; DX-loader code
 
-		org	phys_adr	; set physical address
+		org	boot_adr	; set physical location of code, address
 
 car_ini		ldx	#$00		; move data from physicall location to relocation area
 c0		lda	phys_adr,x
@@ -23,18 +19,8 @@ c0		lda	phys_adr,x
 		bne	c0
 car_run		jmp	rel_run		; jump to relocated code
 
-		org	r:rela_adr	; set relocation address
-
-rel_run		lda	#$ff		; turn off BASIC! (if any)
-		sta	$d301		
-
-		lda	$d500
-		sta	$d500		; turn off cartridge mapper at $a000-$bfff, and select next sector/bank
-
-		lda	#$c0		; set MEMTOP to $c000
-		sta	$6a
-
-		jsr	gr0		; re-init the screen
+phys_adr	equ	*
+		org	r:rela_adr
 
 i_loop		lda	<rts_vec	; set default INIT address to RTS instruction vector
 		sta	$2e2
@@ -55,7 +41,7 @@ head_loop	jsr	get		; get load address
 		sta	blk_end_hi+1
 
 blk_loop	jsr	get		; get byte
-load_adr	sta	$0000		; put at actual block address
+load_adr	sta	$ffff		; put at actual block address
 
 		lda	load_adr+1	; check for end of block
 blk_end_lo	cmp	#$ff
@@ -78,43 +64,71 @@ bl_end		jsr	f_ini		; call the file INIT vector
 f_run		jmp	($2e0)		; run loaded file!
 f_ini		jmp	($2e2)		; call init segment
 
-get		lda	$d500		; get byte
-		inc 	get+1		; inc lo-addr
-		inc	get_bnk+1	; inc lo-addr in "bank change" section
-		bne	g_skp		; next sector?
-get_bnk		sta	$d500		; next bank
-
-g_skp		dec	f_len		; decrement file length
+get		lda	f_len+0		; decrement file length
 		bne	*+5
 		dec	f_len+1
+		dec	f_len+0
 	
+get_byt		lda	$d500		; get byte
+		inc 	get_byt+1	; inc lo-addr
+		bne	*+5		; next sector?
+get_bnk		sta	$d500		; next bank
+		inc	get_bnk+1	; inc lo-addr in "bank change" section
 rts_vec		rts
-	
-	
-gr0    		ldx	#$00	        ; select IOCB #0
-		lda	#$0c	        ; set "CLOSE" command
-		jsr	xcio
 
-		lda	#<ename		; set buffer address
-		sta	icbufa+0,x
-		lda	#>ename
-		sta	icbufa+1,x
+; loader starts here
 
-		lda	#$0c        	; set for READ/WRITE
-		sta	icax1,x
-		lda	#$00
-		sta	icax2,x
-		lda	#$03        	; set "OPEN" command
-xcio		sta	iccmd,x
-		jmp	cio
-	
-ename		dta	c'E:',$9b
-	
+rel_run		sei			; disable IRQ
+		inc	$d40e		; disable NMI
+		lda	#$ff		; turn off BASIC! (if any)
+		sta	$d301
+
+		lda	$d500
+		sta	$d500		; turn off cartridge mapper at $a000-$bfff, and select next sector/bank
+		sta	$d40a		; wait a little!
+
+off_loop	lda	$d013		; chek Trig3 state (0 == cartridge off)
+		asl	@
+		asl	@
+		sta	$d01a
+		bne	off_loop
+		sta	$3fa
+
+		lsr	$d40e		; restore NMI
+		cli			; restore IRQ
+
+		lda	#$c0		; set MEMTOP to $c000
+		sta	$6a
+
+		jsr	gr0		; re-init the screen
+
+		ldy	#2		; move X-offset/position of the message into the Y reg.
+in0		lda	msg_ini-2,y	; load from source...
+		beq	go_load		; end of data?
+		sta	($58),y		; no! then put on screen!
+		iny			; inc. loop counter
+		bne	in0		; loop!
+
+go_load		jmp	i_loop		; jump to loader
+
+; screen editor re-open subroutine
+
+gr0		ldx	#2		; close "E:"
+		jsr	editor
+		ldx	#0		; open "E:"
+editor		lda	$e401,x
+		pha
+		lda	$e400,x
+		pha
+		rts
+
+msg_ini		dta	d'Boot...',0
+
 		ert	*>$bff9
 
 		org	cart_header
 
-f_len		dta	a($ffff)
+crt_flen	dta	a($aa55)
 		dta	$00
 		dta	$00
 		dta	a(car_ini)
