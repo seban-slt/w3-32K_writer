@@ -54,7 +54,6 @@ The program is ready to work. The available commands are:
 
 The user data buffer size is $7f00, the `*.xex` loader uses one page, so $100+$7F00 is $8000 the size of SRAM that is present in the cartridge.
 
-
 The Loader
 ----------
 
