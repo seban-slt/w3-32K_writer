@@ -914,7 +914,7 @@ err_loop	jsr	show_trig3		; show actual TRIG3 value on screen!
 
 ret_or_run	lda	TRIG3			; cart already enabled?
 		beq	*+5			; no!
-		jmp	WARM_START		; yes! then warm-reset!
+		jmp	warm_start		; yes! then warm-reset!
 		rts				; return
 
 ; this proc check for ESC key pressed without OS-ROM intercation!
