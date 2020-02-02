@@ -14,15 +14,15 @@ Cartridge can work in two modes, one is "read mode", so the computer can start f
 
 In this mode cartridge maps first page (256 bytes) of SRAM memory on two areas:
 
-$A000-$BFFF (and repeats the 256 byte window by 32 times in that area)
-$D500-$D5FF
+	$A000-$BFFF (and repeats the 256 byte window by 32 times in that area)
+	$D500-$D5FF
 
 When the 1st page of SRAM is mapped at $A000-$BFFF, and it content have a proper code (not so long code, this startup code must fit in 256 bytes), then OS can init and start this code during startup of the machine.
 
 Any writes to $D500-$D5FF area in this mode (Read Mode) do two things. One is that the cartridge visibility from $A000-$BFFF will be disabled after 1st write, and the page/bank visible at $D500-$D5FF area will changed to next one. But also the write to that area at this moment modifies the written location! So if we want to disable the cartridge and do not destroy SRAM data, we must read the data from $D5xx area and then write it back. 
 
-lda $d500
-sta $d500
+	lda $d500
+	sta $d500
 
 Next we have the 2nd mode, the “program mode”:
 
@@ -44,13 +44,16 @@ After booting the DOS, and running the software, the command prompt should appea
 
 The program is ready to work. The available commands are:
 
-“?”, “HELP” --> show list of commands
-“DOS” --> exit to DOS
-“CLS” --> clear the screen
-“DIR” --> shows the directory of disk (default filespec is D:*.*, but it is possible to type anything, e.g. “DIR H4:*.XEX”
-“LOAD dev:filename.ext” --> loads the selected file from selected device, e.g. “LOAD D8:SFDN.XEX”
-“PROG” --> starts the programming/writing module (the next instructions will show on new screen)
-“VERIFY” --> verifies the content of buffer with the SRAM content on cartridge. The data buffer is compared, but also the proper boot-loader code must present to start the verification procedure.
+`“?”, “HELP” -->`  show list of commands
+`“DOS” -->` exit to DOS
+`“CLS” -->` clear the screen
+`“DIR” -->` shows the directory of disk (default filespec is D:*.*, but it is possible to type anything, e.g. “DIR H4:*.XEX”
+`“LOAD dev:filename.ext” -->` loads the selected file from selected device, e.g. “LOAD D8:SFDN.XEX”
+`“PROG” -->` starts the programming/writing module (the next instructions will show on new screen)
+`“VERIFY” -->` verifies the content of buffer with the SRAM content on cartridge. The data buffer is compared, but also the proper boot-loader code must present to start the verification procedure.
+
+The user data buffer is $7f00, the `*.xex` loader uses one page, so $100+$7F00 is $8000 the size of SRAM that is present in the cartridge.
+
 
 The Loader
 ----------
@@ -65,7 +68,7 @@ The Code
 the code is divided into two files:
 
 `w3_prox.xsm` - this is main code for the program
-`loader.xsm` - this is loader code. This code is included by `w3_prog.xsm` and then placed at 1st page/sector of SRAM memory during programming the cartridge. On next pages of memory is located the file that was loaded into buffer before programming the cartridge.
+`loader.xsm` - this is loader code. The loader code is included by `w3_prog.xsm` and then placed at 1st page/sector of SRAM memory during programming the cartridge. On next pages of memory is located the file that was loaded into buffer before programming the cartridge.
 
 The code is written in 6502 assembly language, and to compile you must use the [XASM assembler](https://github.com/pfusik/xasm) by 0xF (a.k.a Piotr Fusik)
 
