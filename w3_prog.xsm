@@ -1,4 +1,24 @@
-		opt	h+
+; -----------------------------------------------------------------------------
+;
+; "Weekend 3+ 32K" cartridge programmer, done by Seban/Slight
+;
+; .O.	released at 2019/2020
+; ..O
+; OOO	>>> Public Domain <<<
+;
+; some infos:
+;
+; - use XASM to compile (https://github.com/pfusik/xasm)
+;
+; - thanks to Zenon/Dial for reverse engineering, schematics
+;   and a lot of useful & detailed information about original unit
+;
+; - thanks to Galtron for sharing the oryginal unit,
+;   motivation, testing this software, and a lot of patience! :)
+;
+; -----------------------------------------------------------------------------
+
+		opt	h+		; Atari DOS headers on!
 
 ; Atari OS defs
 
@@ -24,6 +44,7 @@ icax5		equ	$034e
 icax6		equ	$034f
 
 cio		equ	$e456
+warm_start	equ	$e474
 
 ; CIO commands
 
@@ -36,39 +57,67 @@ CIO_STATUS	equ	$0d
 
 ; OS registers
 
-RT_CLOCK	equ	$14
-RAMTOP		equ	$6a
-COLBACK		equ	$2c8
-RAMSIZ		equ	$2e4
-BASICF		equ	$3f8
+RT_CLOCK	equ	$14		; Real Time Clock (lowest byte)
+RAMTOP		equ	$6a		; RAM TOP (hi-byte) address
+COLBACKS	equ	$2c8		; Background colour (shadow register)
+RAMSIZ		equ	$2e4		; RAM Size (hi-byte)
+BASICF		equ	$3f8		; Basic Flag
 
-TRIG3		equ	$d013
-PORTB		equ	$d301
+; GTIA hardware registers
+
+TRIG3		equ	$d013		; Trigger3 status (in Atari XE/XL connected to cart port)
+
+COLPF0		equ	$d016		; colour of playfield #0
+COLPF1		equ	$d017		; colour of playfield #1
+COLPF2		equ	$d018		; colour of playfield #2
+COLPF3		equ	$d019		; colour of playfield #3
+COLBACK		equ	$d01a		; colour of background
+CONSOL		equ	$d01f		; console register (console keys status + bell/speaker 1 bit output)
+
+; POKEY hardware registers
+
+KBCODE		equ	$d209		; Keyboard Code
+SKSTAT		equ	$d20f		; Serial and Keyboard Status register
+
+; PIA hardware registers
+
+PORTB		equ	$d301		; PORTB
+
+; ANTIC hardware registers
+
+DMACTL		equ	$d400		; DMA control
+DLISTL		equ	$d402		; Display List address lo-byte
+DLISTH		equ	$d403		; Display List address hi-byte
+WSYNC		equ	$d40a		; Wait for sync
+VCOUNT		equ	$d40b		; Vectrical count
+NMIEN		equ	$d40e		; NMI enable
 
 ; zero page	
 
-ptr		equ	$80
+ptr		equ	$80		; zero page temporary/universal pointer
 
-; colours
+; colours equates for PAL TV-system
 
-BLACK		equ	$00
-RED		equ	$20
+BLACK		equ	$00		; black
+RED		equ	$20		; red
+VIOLET		equ	$40		; violet
+BLUE		equ	$80		; blue
 
 ; prog defs
 
 NULL		equ	0
 
-max_txt_len	equ	$100
-line_buff	equ	$500
-line_buff_len	equ	$80
+max_txt_len	equ	$100		; maximum length of text send via editor "PUT" command
+line_buff	equ	$500		; user input buffer address
+line_buff_len	equ	$80		; user input maximum length
 
-fname_ptr	equ	$500
-data_buff	equ	$3d00
-data_buff_len	equ	$7f00
+fname_ptr	equ	$500		; filename buffer
+data_buff	equ	$3d00		; data buffer address
+data_buff_len	equ	$7f00		; maximum length of data
 
 ; file structure starts here
 
-		org	$2000
+		org	$2000		; set the CODE load address!
 
 prg_ini		lda	$d500		; disable W3+ cart (maybe enabled?)
 		sta	$d500
@@ -101,17 +150,17 @@ editor		lda	$e401,x		; screen editor direct call
 		pha
 ini_end		rts
 
-ram_err		ldy	#39
+ram_err		ldy	#[40-1]		; message len
 
-r0		lda	msg_ram_err,y
-		sta	($58),y
-		dey
-		bpl	r0
+r0		lda	msg_ram_err,y	; load message char
+		sta	($58),y		; put on screen
+		dey			; decr. loop counter
+		bpl	r0		; repeat until Y reg. will be negative (>=0)
 
-r1		lda	$d40b
-		sta	$d40a
-		asl	@
-		sta	$d01f
+r1		lda	VCOUNT		; load VCOUNT value into A
+		sta	WSYNC		; halt till H-sync pulse
+		asl	@		; *2
+		sta	CONSOL		; make some iritating noise! :)
 		jmp	r1
 
 ;			  0123456789012345678901234567890123456789
@@ -119,15 +168,15 @@ msg_ram_err	dta	d"Can't disable ROM at $A000-$BFFF area..."*
 
 		ini	prg_ini
 
-		org	$2000
+		org	$2000		; after init segment reuse space, and load next code on the same location!
 
-msg_welcome	dta	ClrScr,29,c"*** Weekend 3+ cart. writer v0.5 ***",EoL
-		dta	c" - done by Seban/Slight, (p) 2019 -",EoL,EoL
-		dta	c" alpha version! don't redistribute! "*,EoL,EoL,0
+; program welcome message, and command-line messages
+
+msg_welcome	dta	ClrScr,29,c"*** Weekend 3+ cart. writer v1.2 ***",EoL
+		dta	c" - done by Seban/Slight, (p) 2020 -",EoL,EoL,0
 		
 msg_hlp		dta	EoL,c"Available commands are:",EoL,0
 msg_bad_cmd	dta	c"Unknown command, try HELP or ?",Bell,EoL
-msg_cmd_notim	dta	c"Command not implemented yet ;/",Bell,EoL
 
 ; data structures for File/CIO commands:
 
@@ -145,15 +194,16 @@ editor_input	dta	0,CIO_GET_RECORD,a(line_buff),a(line_buff_len)	; input #0,line$
 
 ; set background colour
 
-set_colback	sta	$2c8
+set_colback	sta	COLBACKS
 ;		jmp	vsync_wait		; jmp not needed when vsync_wait is next
 
 ; wait for vertical blank
 
-vsync_wait	lda	RT_CLOCK
-		cmp	RT_CLOCK
-		beq	*-2
+vsync_wait	lda	RT_CLOCK		; load RT_CLOCK
+		cmp	RT_CLOCK		; compare with actual value (incerement every VBL interrupt)
+		beq	*-2			; wait until value is changed (RT_CLOCK will increment on VBL)
 		rts
+
 ; screen editor	INIT
 
 editor_init	ldx	<editor_close		; CLOSE #0 command struct
@@ -175,16 +225,16 @@ print		stx	editor_put+2		; store LO-byte of message address in data structure
 
 ; print the null terminated string on console
 
-printz		stx	prz_msg+1	; store message address direct in code body below
+printz		stx	prz_msg+1		; store message address direct in code body below
 		sty	prz_msg+2
 		
-prz_msg		lda	$beee		; get msg char
-		bne	*+3		; end of string?
-		rts			; yes! back to caller
+prz_msg		lda	$beee			; get msg char
+		bne	*+3			; end of string?
+		rts				; yes! back to caller
 		
-		jsr	put_c		; put char on console
+		jsr	put_c			; put char on console
 		
-		inc	prz_msg+1	; increment string address
+		inc	prz_msg+1		; increment string address
 		bne	*+5
 		inc	prz_msg+2
 		
@@ -213,46 +263,46 @@ put_c		ldx #$00			; channel #0
 
 ; print hex procedure
 
-put_hex		pha
+put_hex		pha				; store value on stack
+		lsr	@			; move upper nibble to lower nibble!
 		lsr	@
 		lsr	@
 		lsr	@
-		lsr	@
-		jsr	to_hex
-		pla
-		and	#$0f
-to_hex		cmp 	#$0a
-		sed
-		adc 	#'0'
-		cld
-		jmp	put_c
+		jsr	to_hex			; print out the lower nibble
+		pla				; restore value
+		and	#$0f			; leave only the lower nibble
+to_hex		cmp 	#$0a			; compare with #10 value
+		sed				; turn on decimal mode ON!
+		adc 	#'0'			; add ATASCII "0" value (and correct the value above >$09 because decimal mode is ON!)
+		cld				; turn off decimal mode OFF!
+		jmp	put_c			; print out calculated characted
 
 ; BIN2DEC procedure
 
-bin_dec8	sta	product
-		lda	#0
+bin_dec8	sta	product			; store value that will be converted to decimal
+		lda	#0			; clear out the output digits
 		sta	digits+0
 		sta	digits+1
 
-		ldy	#7
-		sed				; do a binary to decimal conversion
-bd0		asl	product
+		ldy	#7			; we will convert only 8-bit number, so set the loop counter to 7 (7..0 => 8)
+		sed				; turn on the decimal mode!
+bd0		asl	product			; shift out the input value
 
-		lda	digits+0
+		lda	digits+0		; digit #0 addition in decimal mode (also depend on carry flag)
 		adc	digits+0
 		sta	digits+0
 
-		lda	digits+1
+		lda	digits+1		; digit #1 addition in decimal mode
 		adc	digits+1
 		sta	digits+1
 
-		dey
-		bpl	bd0
-		cld
-		rts
+		dey				; decrement loop counter
+		bpl	bd0			; reper until loop counter is positive!
+		cld				; turn off decimal mode
+		rts				; return
 
-product		dta	$00
-digits		dta	$00,$00
+product		dta	$00			; input value
+digits		dta	$00,$00			; output digits
 
 ; prints out the "welcome message on screen
 
@@ -262,11 +312,11 @@ welcome_msg	ldx	<msg_welcome		; print welcome message
 
 ; show the command line prompt
 
-cmd_prompt	ldx	#<pr_line
+cmd_prompt	ldx	#<pr_line		; print out the command line message
 		ldy	#>pr_line
 		jmp	printz
 
-pr_line		dta	c"CMD>",0
+pr_line		dta	c"CMD>",0		; command line message in ATASCII, terminated by zero
 
 ; procedure gets the user input from console
 
@@ -286,84 +336,84 @@ get_cmd_line	ldx	<editor_input		; call INPUT command line
 
 ; CIO struct parser
 
-cio_parse_cmd	stx	ptr+0
-		sty	ptr+1
-		ldy	#$00
+cio_parse_cmd	stx	ptr+0			; store lo-byte of address to zero-page located pointer
+		sty	ptr+1			; store hi-byte of address to zero-page located pointer
+		ldy	#$00			; clear the Y reg.
 		
-		lda	(ptr),y		; get CIO channel number
-		asl	@
-		asl	@
-		asl	@
-		asl	@
-		tax
+		lda	(ptr),y			; get CIO channel number
+		asl	@			; *2
+		asl	@			; *4
+		asl	@			; *8
+		asl	@			; *16
+		tax				; move to X reg. (will be index value for storing data into IOCB)
 		iny
 		
-		lda	(ptr),y		; get CIO "command"
-		sta	iccmd,x
+		lda	(ptr),y			; get CIO "command"
+		sta	iccmd,x			; store in IOCB command register
 		iny
 
-		cmp	#CIO_CLOSE	; if CLOSE command then skip next data
+		cmp	#CIO_CLOSE		; if CLOSE command then skip next data
 		beq	cio_skp0
 
-		cmp	#CIO_OPEN	; if not OPEN command skip AUX bytes setup
+		cmp	#CIO_OPEN		; if not OPEN command skip AUX bytes setup
 		bne	cio_skp1
 
-		lda	(ptr),y		; get AUX1 value
-		sta	icax1,x
+		lda	(ptr),y			; get AUX1 value
+		sta	icax1,x			; store in IOCB AUX1 register
 		iny
 
-		lda	(ptr),y		; get AUX2 value
-		sta	icax2,x
+		lda	(ptr),y			; get AUX2 value
+		sta	icax2,x			; store in IOCB AUX2 register
 		iny
 				
-cio_skp1	lda	(ptr),y		; get LO byte of buffer address
-		sta	icbufa+0,x
+cio_skp1	lda	(ptr),y			; get LO byte of buffer address
+		sta	icbufa+0,x		; store lo-byte in IOCB buffer address register
 		iny
 
-		lda	(ptr),y		; get LO byte of buffer address
-		sta	icbufa+1,x
+		lda	(ptr),y			; get LO byte of buffer address
+		sta	icbufa+1,x		; store hi-byte in IOCB buffer address register
 		iny
 
-		lda	iccmd,x		; chek for CIO OPEN command
-		cmp	#CIO_OPEN
-		beq	cio_skp0
+		lda	iccmd,x			; chek for CIO OPEN command
+		cmp	#CIO_OPEN		; when OPEN COMMAND...
+		beq	cio_skp0		; skip setting of IOCB buffer-length values
 
-		lda	(ptr),y		; get LO byte of buffer length
-		sta	icbufl+0,x
+		lda	(ptr),y			; get LO byte of buffer length
+		sta	icbufl+0,x		; store lo-byte in IOCB buffer length register
 		iny
 
-		lda	(ptr),y		; get LO byte of buffer length
-		sta	icbufl+1,x
+		lda	(ptr),y			; get LO byte of buffer length
+		sta	icbufl+1,x		; store hi-byte in IOCB buffer length register
 
-cio_skp0	jsr	cio		; call system CIO routine
-		bpl	cio_OK
-		php
-		cpy	#EoF
-		beq	cio_eof
+cio_skp0	jsr	cio			; call system CIO routine
+		bpl	cio_OK			; check the error code (posive value @return mens no errors!)
+		php				; store status register
+		cpy	#EoF			; when EoF code...
+		beq	cio_eof			; then all is OK (EoF code is negative!)
 		
-cio_err		lda	#RED		; when CIO error then set border color to RED
+cio_err		lda	#RED			; when CIO error then set border color to RED
 		jsr	set_colback
-cio_eof		plp
-cio_OK		rts
+cio_eof		plp				; restore status register
+cio_OK		rts				; return!
 
 ; procedure prints I/O error message, with CIO error code converted to decimal
 
-CIO_print_error	tya			; move	error code to A reg.
-		jsr	bin_dec8	; convert to decimal
+CIO_print_error	tya				; move	error code to A reg.
+		jsr	bin_dec8		; convert to decimal
 		
-		ldx	#<cio_msg_err	; set address of error message
+		ldx	#<cio_msg_err		; set address of error message
 		ldy	#>cio_msg_err
-		jsr	printz		; print error message
+		jsr	printz			; print error message
 
-		lda	digits+1	; print out HI-byte of error code
+		lda	digits+1		; print out HI-byte of error code
 		jsr	put_hex
-		lda	digits+0	; print out LO-byte of error code
+		lda	digits+0		; print out LO-byte of error code
 		jsr	put_hex
-		jsr	put_eol		; add end of line marker
-		sec			; set CARRY (signals error condition for caller)
-		rts			; return
+		jsr	put_eol			; add end of line marker
+		sec				; set CARRY (signals error condition for caller)
+		rts				; return
 
-cio_msg_err	dta	$9b,c"I/O error #",0
+cio_msg_err	dta	$9b,c"I/O error #",0	; CIO I/O error message in ATASCII
 
 ; command table
 
@@ -598,12 +648,13 @@ clear_file_area	ldx	#>data_buff_len		; load HI-byte of data buffer len
 		lda	#>data_buff		; load HI-byte of data buffer address
 		sta	ptr+1
 
-		lda	#$00			; zero to A reg. (fill byte)
-		tay				; zero to Y reg. (page-byte counter)
+		lda	#$ff			; $ff to A reg. (fill byte)
+		ldy	#$00			; zero to Y reg. (page-byte counter)
 		
 clr_b0		sta	(ptr),y			; clear mam @ptr
 		iny				; next byte
 		bne	clr_b0			; loop till end of page
+		inc	ptr+1
 		dex				; decrement page counter
 		bne	clr_b0			; loop until done
 		rts
@@ -618,10 +669,11 @@ msg_bytes_in	dta	c" bytes in buffer.",EoL,0
 msg_not_dos	dta	c" Not a Atari-DOS file! "*,Bell,EoL,EoL,0
 
 ; -----------------------------------------------------------------------------
+; PROG command
 
 cmd_prog	lda	file_valid
 		bne	cmd_prog_OK
-		ldx	<msg_no_file
+no_valid_file	ldx	<msg_no_file
 		ldy	>msg_no_file
 		jsr	print
 		clc
@@ -630,14 +682,14 @@ cmd_prog	lda	file_valid
 msg_no_file	dta	c" No vaild file in buffer! "*,Bell,EoL
 
 cmd_prog_OK	sei				; disable IRQ's
-		inc	$d40e			; disable NMI
-		lda	$d40b			; wait for scan-line #0
+		inc	NMIEN			; disable NMI
+		lda	VCOUNT			; wait for scan-line #0
 		bne	*-3
-		sta	$d400			; disable ANTIC's DISPLAY-DMA
+		sta	DMACTL			; disable ANTIC's DISPLAY-DMA
 
 		jsr	cmd_prog_entry		; jump into relocated code
 
-		lsr	$d40e			; restore NMI's (only VBL)
+		lsr	NMIEN			; restore NMI's (only VBL)
 		cli				; restore IRQ's
 		clc				; all OK!
 		rts				; ... and return!
@@ -645,17 +697,32 @@ cmd_prog_OK	sei				; disable IRQ's
 align_mem0	equ	[[*/$100]+1]*$100	; calculate the aligment to the nearest page (needed correct DL location)
 		org	align_mem0
 
+; display list for "PROG" command
+
+; 3*8 empty lines, then module information line
+
 dlp		dta	$70,$70,$70,$42,a(scr0),$70
+
+; info line A
 		dta	$42
 info_line_a	dta	a(scr1),$00,$02,$70
+
+; info line B
 		dta	$42
 info_line_b	dta	a(scr_a0)
 
+; info line about TRIG3 state
 		dta	$70,$46,a(scrd),$70,$70,$70
 
+; info line about $D5xx preview
 		dta	$70,$46,a(scrc),$10
+
+; 16 lines of mode $0b (1 bit mono mode, 16 bytes per line) 
+; makes graphical preview od $d500-$d5ff area.
 		dta	$4b,a($d500),$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b,$0b
 		dta	$41,a(dlp)
+
+; "PROG" screen messages in ANTIC internal codes
 
 ;			  0123456789abcdef0123456789abcdef
 scr0		dta	d' Weekend 3+ prog/verify module! '*
@@ -700,8 +767,8 @@ to_hex_t3	cmp 	#$0a			; ... do the bin to hex conversion of a nibble
 		rts				; return
 
 cmd_prog_entry	sei				; disable IRQ
-		inc	$d40e			; disable NMI
-		lda	$d40b			; load actual rendered screen line into A reg.
+		inc	NMIEN			; disable NMI
+		lda	VCOUNT			; load actual rendered screen line into A reg.
 		bne	*-3			; wait for screen-line #0
 		
 		lda	$2c5			; set the colours
@@ -709,8 +776,8 @@ cmd_prog_entry	sei				; disable IRQ
 		
 		ldx	<dlp			; setup new "Display List"
 		ldy	>dlp
-		stx	$d402
-		sty	$d403
+		stx	DLISTL
+		sty	DLISTH
 		
 		lda	#$21			; set screen size to "narrow"
 		sta	$d400
@@ -730,7 +797,7 @@ trig3_wait_loop	jsr	show_trig3		; check the TRIG3 state
 		beq	*+5			; if not active, then skip next instruction (2 bytes BEQ and 3 bytes JMP)
 		jmp	trig3_error		; ...or jump to Trig3 state error
 
-		lda	$d20f			; load keyboard status
+		lda	SKSTAT			; load keyboard status
 		and	#$08			; check for SHIFT key
 		beq	prog_begin		; when pressed branch to programming sequence
 
@@ -738,7 +805,7 @@ trig3_wait_loop	jsr	show_trig3		; check the TRIG3 state
 		bne	trig3_wait_loop		; no!
 		rts				; return
 
-prog_begin	lda	#$4a			; set the screen colors (to distinguish programming mode)
+prog_begin	lda	#VIOLET			; set the screen colors (to distinguish programming mode)
 		jsr	set_color
 
 		lda	file_len+0		; store loaded file length directly into bootloader
@@ -773,124 +840,254 @@ prg_l0		ldx	#0			; setup the hi-byte of data buffer (-$100 offset for to include
 		lda	#>[data_buff-$100]
 		sta	ptr+1
 
-prg_l1		lda	(ptr),y			
-		sta	$d500,y
-		inc	ptr+1
-		inx	
-		bpl	prg_l1
+prg_l1		lda	(ptr),y			; load #y byte from buffer
+		sta	$d500,y			; put in on cartridge SRAM memory
+						; any write on $d5xx area also switches to the next bank/page of SRAM memory
 		
-		tya
-		pha
-		lsr	@
-		lsr	@
-		lsr	@
-		tax
-		tya
-		lsr	@
-		and	#$03
-		tay
-		lda	bar_char_tab,y
-		sta	prog_bar,x
+		inc	ptr+1			; next page in buffer
+		inx				; loop counter (128 pages for 32K memory)
+		bpl	prg_l1			; to the loop until X reg. < 128
 		
-		pla
-		tay
-		iny
-		bne	prg_l0
+		tya				; draw a progress-bass based on Y reg. value
+		pha				; save Y reg. on stack (needed later)
+		lsr	@			; divde the Y reg. val by 2
+		lsr	@			;		   ... by 4
+		lsr	@			;		   ... by 8
+		tax				; move to X reg. (represent x-position on screen)
+		tya				; get the Y reg. value again
+		lsr	@			; divde by 2
+		and	#$03			; and leave only 2 bits
+		tay				; put calculated value into Y reg.
+		lda	bar_char_tab,y		; get from progress-bar char-tab and use Y reg. as index of table
+		sta	prog_bar,x		; draw on screen (X reg. as x-position value)
+		
+		pla				; restore original value of Y reg from stack to A reg.
+		tay				; and put it again to Y reg.
+		iny				; incr. loop counter
+		bne	prg_l0			; all done? when no... do the loop!
 
-		ldx	#<scr5			
+		ldx	#<scr5			; set the message on info line A!
 		ldy	#>scr5
 		stx	info_line_a+0
 		sty	info_line_a+1
 
-		ldx	#<scr_a3	
+		ldx	#<scr_a3		; set the message on info line B!
 		ldy	#>scr_a3
 		stx	info_line_b+0
 		sty	info_line_b+1
 
-		lda	#$8a
+		lda	#BLUE			; set the colors to the blueinsh ones!
 		jsr	set_color
 		
-prg_wait_t3	jsr	show_trig3
-		bne	ret_or_run
+prg_wait_t3	jsr	show_trig3		; show TRIG3 value on screen
+		bne	ret_or_run		; when activel, then jump out of the loop! (reuse existing piece of code)
 
-		lda	$d20f
-		and	#$08
-		bne	prg_wait_t3
+		lda	SKSTAT			; read the KEYBOAD flags...
+		and	#$08			; and check for SHIFT key
+		bne	prg_wait_t3		; when not pressed, wait in the loop!
 
 prg_trig3_done	rts
 
 ; Trig3 error sub-routine
 
-trig3_error	lda	#RED+$0a
+trig3_error	lda	#RED			; set the colours to RED ones
 		jsr	set_color
 		
-		ldx	#<scr3			
+		ldx	#<scr3			; set message info info line A!
 		ldy	#>scr3
 		stx	info_line_a+0
 		sty	info_line_a+1
 
-		ldx	#<scr_a1	
+		ldx	#<scr_a1		; set message info info line B!
 		ldy	#>scr_a1
 		stx	info_line_b+0
 		sty	info_line_b+1
 
-err_loop	jsr	show_trig3
+err_loop	jsr	show_trig3		; show actual TRIG3 value on screen!
 
-		lda	$d40b			; make some noise
-		asl	@
-		sta	$d01f
+		lda	VCOUNT			; load the ANTIC's vertical count register
+		asl	@			; shift it up!
+		sta	CONSOL			; and make some noise
 
 		jsr	is_ESC_pressed		; check for ESC key!
 		bne	err_loop		; no, do the loop!
 
 ret_or_run	lda	TRIG3			; cart already enabled?
 		beq	*+5			; no!
-		jmp	$e474			; yes! then warm-reset!
+		jmp	WARM_START		; yes! then warm-reset!
 		rts				; return
 
 ; this proc check for ESC key pressed without OS-ROM intercation!
 
-is_ESC_pressed	lda	$d20f			; get POKEY keyboard status reg.
+is_ESC_pressed	lda	SKSTAT			; get POKEY keyboard status reg.
 		and	#$04			; any key pressed?
 		bne 	is_no_key		; no! jump!
-		lda	$d209			; get POKEY scan code
+		lda	KBCODE			; get POKEY scan code
 		cmp	#$1c			; is that 'ESC' code?
 is_no_key	rts
 
 ; shows TRIG3 state at info line
 
-show_trig3	lda	TRIG3
-		pha
-		ldy	#$0e
-		jsr	hex_trig3
-		pla
-		rts
+show_trig3	lda	TRIG3			; load TRIG3 state
+		pha				; store on stack
+		ldy	#$0e			; set x-pos of text
+		jsr	hex_trig3		; print out on screen
+		pla				; restore TRIG3 value
+		rts				; and return to the caller with this value i A reg.
 
 ; sets the screen colours
 
-set_color	pha
-		lda	$d40b
-		bne	*-3
-		pla
-		sta	$d016
-		sta	$d017
-		and	#$f0
-		ora	#$04
-		sta	$d018
+set_color	and 	#$f0			; leave only the chroma value
+		ora	#$0a			; set the default luma
+		pha				; store the colour value
+		lda	VCOUNT			; load the ANTIC's raster line counter
+		bne	*-3			; wait for scan-line #0
+		pla				; restore the colour value
+		sta	COLPF0			; set the main COL0
+		sta	COLPF1			; ...and COL1 register values
+		and	#$f0			; mask out the luminance, and leave the chroma
+		ora	#$04			; set darker luma
+		sta	COLPF2			; set the COL2 register
 		rts
 
-cmd_verify	ldx	<msg_cmd_notim
-		ldy	>msg_cmd_notim
-		jsr	print
-		clc
+; -----------------------------------------------------------------------------
+; VERIFY command
+
+cmd_verify	lda	file_valid		; check if any vaild file is present in buffer
+		bne	*+5			; yes! skip "no valid file" jump
+		jmp	no_valid_file		; when no valif file is present jump to proc that inform user about that!
+
+		ldx	#<msg_btldr		; print out message about "boot-loader" searching process
+		ldy	#>msg_btldr
+		jsr	printz
+
+		jsr	boot_search		; search for boot-loader code
+		bcc	btldr_found		; yeah! actual boot-loader code found!
+
+		ldx	#<msg_bt_failed		; boot-loader not found, so print out the message
+		ldy	#>msg_bt_failed
+		jsr	printz
+		clc				; and return to command-line
 		rts
+
+btldr_found	ldx	#<msg_bt_found		; boot-loader found, so print out the proper message
+		ldy	#>msg_bt_found
+		jsr	printz
+
+		ldx	#<data_buff		; set pointer to data buffer location
+		ldy	#>data_buff
+		stx	ptr+0
+		sty	ptr+1
+
+		ldy	#$00
+		sty	pg_fail_cnt		; clear the failed page counter
+		iny				; skip one page (boot-loader code)
+		sty	pg_cnt			; clear setup page counter
+
+vr_loop		ldy	#0			; clear the Y reg (page byte counter)
+
+		lda	$d500			; switch to...
+		sta	$d500			; ... next bank/page of SRAM memory located at $D5xx area
+
+vr_pg_loop	lda	(ptr),y			; get the #Y byte from data buffer
+		eor	$d500,y			; compare it with #y byte od SRAM page (located at $d5yy area)
+		bne	vr_fail			; jump/exit loop, when xor gives not zero (values not equal!)
+vrc_ok		iny				; next byte on page
+		bne	vr_pg_loop		; do the loop until last byte on current page
+
+						; all bytes on page is ok so...
+		lda	#20			; load the ATASCII code of control+t (filled dot char)
+		bne	vr_nx_page
+
+vr_fail		inc	pg_fail_cnt		; page data fail, so increment page-fail counter
+		lda	#'x'			; and load the ATASCII code od "x" char
+
+vr_nx_page	pha				; store ATASCII code of page verification status on stack
+
+		inc	ptr+1			; next page in data buffer
+
+						; we need to put EoL every 32th page to format text output into readable form
+						; 4 lines of 32 chars gives us a nice representation of 128 pages,
+						; so we need to...
+		lda	pg_cnt			; load page counter into A reg.
+		and	#$1f			; and check if it is the any of 32th page number ($00,$20,$40,$60)
+		bne	vr_no_eol		; not zero, so it's not time for EoL! ;)
+
+		lda	#EoL			; send EoL
+		jsr	put_c
+
+vr_no_eol	pla				; restore char code from stack (* or x)
+		jsr	put_c			; send it on screen
+
+		inc	pg_cnt			; increment page counter
+		bpl	vr_loop			; loop until we have the all the 128 ($80) pages
+
+		ldx	#<msg_img_ver		; print out the "image verification" message
+		ldy	#>msg_img_ver
+		jsr	printz
+
+		ldx	#<msg_img_vfail		; load the "failed" message address
+		ldy	#>msg_img_vfail
+
+		lda	pg_fail_cnt		; check for errors!
+		bne	vr_pg_err		; page errors present! ;/
+
+		ldx	#<msg_img_vok		; load the "OK" message address
+		ldy	#>msg_img_vok
+
+vr_pg_err	jsr	printz			; print out the final messge
+
+		clc				; clear carry flag (this means no critial failure)
+		rts				; and return to command line
+
+; boot loader search procedure
+
+boot_search	ldx	#0			; bank counter
+bts_bk_loop	ldy	#0			; page index register
+
+bts_pg_loop	lda	boot_loader,y		; lodad boot-loader byte into A reg.
+		cmp	$d500,y			; compare with RAM bank present at $d5xx area
+		bne	bts_pg_fail		; not equal! go next bank!
+
+		cpy	#$f9			; skip the $fa,$fb locations (file_len stored in boot-loader code)
+		bne	*+4
+		ldy	#$fb
+
+		iny				; next byte on page
+		bne	bts_pg_loop		; do the page loop!
+
+		clc				; all OK! return with carry cleared!
+		rts
+
+bts_pg_fail	lda	$d500			; next bank
+		sta	$d500
+
+		inx				; increment bank loop-counter
+		bpl	bts_bk_loop		; all banks?
+
+		sec				; search fail! return with carry bit set!
+		rts
+
+; local variables needed by VERFIY command code
+
+pg_cnt		brk				; page counter
+pg_fail_cnt	brk				; failed page counter
+
+; messages for VERIFY command
+
+msg_btldr	dta	EoL,c"Searching for boot-loader...",0
+msg_bt_found	dta	c"found!",EoL
+		dta	EoL,c"verifying (B boot, ",20,c" OK, x fail):",EoL,EoL,c"B",0
+msg_bt_failed	dta	c" failed! "*,EoL,c"Try to reprogramm cartrige or,",EoL
+		dta	c"press RESET on cart and try again!",EoL,EoL,Bell,0
+msg_img_ver	dta	EoL,EoL,c"Image verification ",0
+msg_img_vfail	dta	c"failed!",EoL,EoL,0
+msg_img_vok	dta	c"OK!",EoL,EoL,0
 
 ; -----------------------------------------------------------------------------
 ; this procedure is used to parse the user command line buffer
 
-parse_input	sta	input_len_a+1		; store length of entered command line
-		sta	input_len_b+1
-		sta	input_len_c+1
+parse_input	sta	input_len		; store length of entered command line
 
 		ldx	#$00			; clear the X reg. (cmd-table index)
 pr_next		ldy	#$00			; clear the Y reg. (user input buffer index)
@@ -901,7 +1098,7 @@ pr_loop		lda	cmds,x
 		bne	pr_dont_match		; not equal! Try another command!
 		inx				; advance index of cmd table
 		iny				; advance index of line buffer
-input_len_a	cpy	#$ff			; compare with entered line length?
+		cpy	input_len		; compare with entered line length?
 		bcc	pr_loop			; ... less?
 		beq	pr_loop			; ... or eual?
 pr_not_found	sec				; all compares failed, command not found! return with CARRY set!
@@ -922,7 +1119,7 @@ pr_skp_wspace	lda	line_buff,y		; get char from command line buffer
 		cmp 	#$20			; space?
 		bne	parse_done		; no! so end skip-loop
 		iny				; next char
-input_len_b	cpy	#$ff			; end of chars in buffer?
+		cpy	input_len		; end of chars in buffer?
 		bcc	pr_skp_wspace		; no, do the skip-loop!
 
 parse_done	lda	#$00			; set background colour to black
@@ -933,8 +1130,10 @@ parse_done	lda	#$00			; set background colour to black
 		lda	cmds+1,x		; put the LO-byte of command address on stack
 		pha
 		
-input_len_c	ldx	#0			; return with command line length in X reg.
+		ldx	input_len		; return with command line length in X reg.
 		rts
+
+input_len	brk
 
 ; program starts here
 
